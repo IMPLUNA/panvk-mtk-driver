@@ -21,132 +21,212 @@ concurrency:
 
 jobs:
   build:
-    name: Build Android Vulkan Driver (API 34)
+    name: Build PanVK MTK Driver - Android 14
     runs-on: ubuntu-24.04
     timeout-minutes: 360
 
+    env:
+      NDK_VERSION: r27c
+      WORKDIR: /home/runner/panvk-mtk
+      DEBIAN_FRONTEND: noninteractive
+
     steps:
+      # 1. 获取源码
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Rust Android target
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
-
+      # 2. 安装 Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install Meson, Ninja and dependencies
+      # 3. 安装 Rust 和 Android 交叉编译目标
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      # 4. 安装完整构建依赖
+      - name: Install system dependencies
         run: |
-          set -euo pipefail
-
-          python -m pip install --upgrade pip
-          python -m pip install --upgrade "meson>=1.4" ninja packaging
-
-          echo "=== Meson version ==="
-          meson --version
-
-          python -c \
-            'from packaging.version import Version; import subprocess; v=Version(subprocess.check_output(["meson", "--version"], text=True).strip()); print("Meson:", v); assert v >= Version("1.4"), "Meson >= 1.4 required"'
-
-          echo "=== Ninja version ==="
-          ninja --version
+          set -euxo pipefail
 
           sudo apt-get update
+
           sudo apt-get install -y \
-            patchelf \
-            file \
-            binutils \
             build-essential \
             pkg-config \
-            cmake \
             git \
+            wget \
             curl \
             unzip \
-            xz-utils
+            xz-utils \
+            file \
+            binutils \
+            patchelf \
+            cmake \
+            ninja-build \
+            bison \
+            flex \
+            gettext \
+            xsltproc \
+            python3 \
+            python3-pip \
+            python3-setuptools \
+            python3-wheel \
+            python3-mako \
+            python3-yaml \
+            python3-packaging \
+            clang-18 \
+            llvm-18 \
+            llvm-18-dev \
+            libclang-18-dev \
+            libclang-cpp18-dev \
+            libclang-rt-18-dev \
+            libclc-18-dev \
+            spirv-tools \
+            glslang-tools \
+            libdrm-dev \
+            libexpat1-dev \
+            zlib1g-dev \
+            libx11-dev \
+            libxext-dev \
+            libxdamage-dev \
+            libxfixes-dev \
+            libxrandr-dev \
+            libwayland-dev \
+            rustc \
+            cargo
 
-      - name: Check repository build files
+      # 5. 安装 Meson >= 1.4 和 Ninja
+      - name: Install Meson and Ninja
         run: |
           set -euo pipefail
 
-          test -f build.sh || {
-            echo "::error::build.sh not found in repository root"
-            exit 1
-          }
+          python -m pip install --upgrade \
+            "meson>=1.4" \
+            ninja \
+            packaging \
+            mako
 
-          echo "=== Repository root ==="
-          ls -la
+          export PATH="$(python -m site --user-base)/bin:$PATH"
+
+          echo "=== Meson ==="
+          meson --version
+
+          python -c '
+          from packaging.version import Version
+          import subprocess
+
+          version = Version(
+              subprocess.check_output(
+                  ["meson", "--version"], text=True
+              ).strip()
+          )
+
+          print("Detected Meson:", version)
+          assert version >= Version("1.4"), \
+              "Meson 1.4 or newer is required"
+          '
+
+          echo "=== Ninja ==="
+          ninja --version
+
+      # 6. 检查 libclc 和 LLVM
+      - name: Verify LLVM and libclc
+        run: |
+          set -euo pipefail
+
+          echo "=== LLVM ==="
+          llvm-config-18 --version
+
+          echo "=== Clang ==="
+          /usr/bin/clang-18 --version
+
+          echo "=== libclc package ==="
+          dpkg-query -W \
+            libclc-18 \
+            libclc-18-dev
+
+          echo "=== libclc files ==="
+          dpkg -L libclc-18-dev
+
+          echo "=== SPIR-V tools ==="
+          command -v spirv-as
+          command -v spirv-val
+
+          echo "=== Rust ==="
+          rustc --version
+          cargo --version
+
+      # 7. 检查仓库文件
+      - name: Validate source tree
+        run: |
+          set -euo pipefail
+
+          test -f build.sh
+          test -f patches/panvk_mtk.patch
+
+          echo "=== Repository ==="
+          git log -1 --oneline
 
           echo "=== Build script ==="
-          sed -n '1,240p' build.sh
+          sed -n '1,180p' build.sh
 
+      # 8. 编译
       - name: Build driver
         env:
-          NDK_VERSION: r27c
+          BUILD_MODE: ${{ inputs.mode }}
+          PATH: /usr/lib/llvm-18/bin:/home/runner/.cargo/bin:/usr/local/bin:/usr/bin:/bin
         run: |
           set -euo pipefail
+
+          mkdir -p "$WORKDIR"
 
           chmod +x ./build.sh
 
-          bash ./build.sh "${{ inputs.mode }}" \
+          set -o pipefail
+          bash ./build.sh "$BUILD_MODE" \
             2>&1 | tee build.log
 
-      - name: Locate and verify build artifacts
+      # 9. 检查产物
+      - name: Verify driver
         if: success()
         run: |
           set -euo pipefail
 
-          echo "=== Candidate shared libraries ==="
-          find . -type f -name '*.so' \
-            -not -path './.git/*' -print
+          DRIVER="driver/vulkan.mali.so"
 
-          echo "=== Candidate archives ==="
-          find . -type f \( \
-            -name '*.zip' -o \
-            -name '*.tar.gz' -o \
-            -name '*.tar.xz' \
-          \) -not -path './.git/*' -print
-
-          mkdir -p artifacts
-
-          # 收集构建产生的文件，避免假定固定输出目录
-          find . -type f \( \
-            -name '*.so' -o \
-            -name '*.zip' -o \
-            -name '*.tar.gz' -o \
-            -name '*.tar.xz' \
-          \) \
-            -not -path './.git/*' \
-            -not -path './artifacts/*' \
-            -exec cp --parents '{}' artifacts/ \;
-
-          if [ -z "$(find artifacts -type f -print -quit)" ]; then
-            echo "::error::No build artifacts found"
+          if [ ! -s "$DRIVER" ]; then
+            echo "::error::Expected driver not found: $DRIVER"
+            find driver -maxdepth 3 -type f -print 2>/dev/null || true
             exit 1
           fi
 
-          echo "=== Artifact file information ==="
-          find artifacts -type f -name '*.so' \
-            -exec file '{}' \;
+          echo "=== ELF information ==="
+          file "$DRIVER"
+          readelf -h "$DRIVER"
+
+          echo "=== Dynamic dependencies ==="
+          readelf -d "$DRIVER" || true
 
           echo "=== SHA256 ==="
-          find artifacts -type f -exec sha256sum '{}' \; \
-            | tee SHA256SUMS.txt
+          sha256sum "$DRIVER" | tee SHA256SUMS.txt
 
+          mkdir -p artifacts
+          cp "$DRIVER" artifacts/vulkan.mali.so
           cp SHA256SUMS.txt artifacts/
 
+      # 10. 上传产物和日志
       - name: Upload build artifacts
-        if: always() && (success() || failure())
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: panvk-mtk-api34-${{ inputs.mode }}
           path: |
             artifacts/
             build.log
-            SHA256SUMS.txt
           if-no-files-found: warn
           compression-level: 0
           retention-days: 14
