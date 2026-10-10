@@ -1,0 +1,68 @@
+name: Build PanVK MTK Driver
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Build mode
+        type: choice
+        required: true
+        default: release
+        options:
+          - release
+          - debug
+
+permissions:
+  contents: read
+
+concurrency:
+  group: panvk-mtk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Android Vulkan driver (API 34)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust Android target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install patchelf and verification tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf file binutils
+
+      - name: Build driver
+        env:
+          NDK_VERSION: r27c
+          WORKDIR: ${{ runner.temp }}/panvk-mtk-build
+        run: |
+          set -euo pipefail
+          bash ./build.sh "${{ inputs.mode }}" 2>&1 | tee build.log
+
+      - name: Verify output
+        run: |
+          set -euo pipefail
+          test -s driver/vulkan.mali.so
+          file driver/vulkan.mali.so
+          readelf -h driver/vulkan.mali.so | grep -E 'Class:|Machine:'
+          sha256sum driver/vulkan.mali.so | tee SHA256SUMS.txt
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: panvk-mtk-driver-api34-${{ inputs.mode }}
+          path: |
+            driver/vulkan.mali.so
+            build.log
+            SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
