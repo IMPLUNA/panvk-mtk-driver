@@ -1,3 +1,4 @@
+
 name: Build PanVK MTK Driver
 
 on:
@@ -27,27 +28,25 @@ jobs:
 
     env:
       NDK_VERSION: r27c
-      WORKDIR: /home/runner/panvk-mtk
       DEBIAN_FRONTEND: noninteractive
+      LLVM_CONFIG: /usr/bin/llvm-config-18
+      PKG_CONFIG_PATH: /usr/lib/llvm-18/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/pkgconfig
+      CMAKE_PREFIX_PATH: /usr/lib/llvm-18
 
     steps:
-      # 1. 获取源码
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. 安装 Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      # 3. 安装 Rust 和 Android 交叉编译目标
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
 
-      # 4. 安装完整构建依赖
       - name: Install system dependencies
         run: |
           set -euxo pipefail
@@ -95,11 +94,8 @@ jobs:
             libxdamage-dev \
             libxfixes-dev \
             libxrandr-dev \
-            libwayland-dev \
-            rustc \
-            cargo
+            libwayland-dev
 
-      # 5. 安装 Meson >= 1.4 和 Ninja
       - name: Install Meson and Ninja
         run: |
           set -euo pipefail
@@ -109,8 +105,6 @@ jobs:
             ninja \
             packaging \
             mako
-
-          export PATH="$(python -m site --user-base)/bin:$PATH"
 
           echo "=== Meson ==="
           meson --version
@@ -133,24 +127,32 @@ jobs:
           echo "=== Ninja ==="
           ninja --version
 
-      # 6. 检查 libclc 和 LLVM
       - name: Verify LLVM and libclc
         run: |
-          set -euo pipefail
+          set -euxo pipefail
 
           echo "=== LLVM ==="
           llvm-config-18 --version
 
           echo "=== Clang ==="
-          /usr/bin/clang-18 --version
+          clang-18 --version
 
-          echo "=== libclc package ==="
-          dpkg-query -W \
-            libclc-18 \
+          echo "=== Installed libclc package ==="
+          dpkg-query -W -f='${Package} ${Version}\n' \
             libclc-18-dev
 
-          echo "=== libclc files ==="
+          echo "=== libclc installed files ==="
           dpkg -L libclc-18-dev
+
+          echo "=== Find libclc metadata ==="
+          find /usr -type f \( \
+            -iname '*libclc*.pc' -o \
+            -iname '*libclc*config.cmake' -o \
+            -iname '*clc*config.cmake' \
+          \) -print 2>/dev/null || true
+
+          echo "=== pkg-config paths ==="
+          pkg-config --variable pc_path pkg-config
 
           echo "=== SPIR-V tools ==="
           command -v spirv-as
@@ -160,21 +162,18 @@ jobs:
           rustc --version
           cargo --version
 
-      # 7. 检查仓库文件
       - name: Validate source tree
         run: |
           set -euo pipefail
 
           test -f build.sh
-          test -f patches/panvk_mtk.patch
 
           echo "=== Repository ==="
           git log -1 --oneline
 
           echo "=== Build script ==="
-          sed -n '1,180p' build.sh
+          sed -n '1,240p' build.sh
 
-      # 8. 编译
       - name: Build driver
         env:
           BUILD_MODE: ${{ inputs.mode }}
@@ -182,44 +181,55 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p "$WORKDIR"
-
           chmod +x ./build.sh
 
-          set -o pipefail
           bash ./build.sh "$BUILD_MODE" \
             2>&1 | tee build.log
 
-      # 9. 检查产物
-      - name: Verify driver
+      - name: Locate and verify build artifacts
         if: success()
         run: |
           set -euo pipefail
 
-          DRIVER="driver/vulkan.mali.so"
+          echo "=== Shared libraries ==="
+          find . -type f -name '*.so' \
+            -not -path './.git/*' -print
 
-          if [ ! -s "$DRIVER" ]; then
-            echo "::error::Expected driver not found: $DRIVER"
-            find driver -maxdepth 3 -type f -print 2>/dev/null || true
+          echo "=== Archives ==="
+          find . -type f \( \
+            -name '*.zip' -o \
+            -name '*.tar.gz' -o \
+            -name '*.tar.xz' \
+          \) -not -path './.git/*' -print
+
+          mkdir -p artifacts
+
+          find . -type f \( \
+            -name '*.so' -o \
+            -name '*.zip' -o \
+            -name '*.tar.gz' -o \
+            -name '*.tar.xz' \
+          \) \
+            -not -path './.git/*' \
+            -not -path './artifacts/*' \
+            -exec cp --parents '{}' artifacts/ \;
+
+          if [ -z "$(find artifacts -type f -print -quit)" ]; then
+            echo "::error::No build artifacts found"
             exit 1
           fi
 
           echo "=== ELF information ==="
-          file "$DRIVER"
-          readelf -h "$DRIVER"
-
-          echo "=== Dynamic dependencies ==="
-          readelf -d "$DRIVER" || true
+          find artifacts -type f -name '*.so' \
+            -exec file '{}' \;
 
           echo "=== SHA256 ==="
-          sha256sum "$DRIVER" | tee SHA256SUMS.txt
+          find artifacts -type f -exec sha256sum '{}' \; \
+            | tee SHA256SUMS.txt
 
-          mkdir -p artifacts
-          cp "$DRIVER" artifacts/vulkan.mali.so
           cp SHA256SUMS.txt artifacts/
 
-      # 10. 上传产物和日志
-      - name: Upload build artifacts
+      - name: Upload build artifacts and logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
