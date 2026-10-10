@@ -31,6 +31,8 @@ jobs:
       LLVM_CONFIG: /usr/bin/llvm-config-18
       PKG_CONFIG_PATH: /usr/lib/llvm-18/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/pkgconfig
       CMAKE_PREFIX_PATH: /usr/lib/llvm-18
+      CARGO_HOME: /home/runner/.cargo
+      PATH: /home/runner/.cargo/bin:/usr/lib/llvm-18/bin:/usr/local/bin:/usr/bin:/bin
 
     steps:
       - name: Checkout repository
@@ -97,6 +99,16 @@ jobs:
           echo "=== Ninja ==="
           ninja --version
 
+      - name: Install bindgen CLI
+        run: |
+          set -euxo pipefail
+
+          cargo install bindgen-cli --locked
+
+          echo "=== Verify bindgen ==="
+          command -v bindgen
+          bindgen --version
+
       - name: Verify LLVM, libclc and SPIR-V translator
         run: |
           set -euxo pipefail
@@ -118,10 +130,9 @@ jobs:
           command -v llvm-spirv-18
           llvm-spirv-18 --version || true
 
-          echo "=== SPIR-V library and CMake metadata ==="
+          echo "=== SPIR-V library metadata ==="
           dpkg -L libllvmspirvlib-18-dev
 
-          echo "=== Search for translator configuration ==="
           find /usr -type f \
             \( -iname '*LLVMSPIRVLib*Config.cmake' \
                -o -iname '*LLVMSPIRVLib*.cmake' \
@@ -135,6 +146,10 @@ jobs:
           echo "=== Rust ==="
           rustc --version
           cargo --version
+
+          echo "=== bindgen ==="
+          command -v bindgen
+          bindgen --version
 
       - name: Validate source tree
         run: |
@@ -151,7 +166,6 @@ jobs:
       - name: Build driver
         env:
           BUILD_MODE: ${{ inputs.mode }}
-          PATH: /usr/lib/llvm-18/bin:/home/runner/.cargo/bin:/usr/local/bin:/usr/bin:/bin
         run: |
           set -euo pipefail
 
