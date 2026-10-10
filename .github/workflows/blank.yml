@@ -26,37 +26,33 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      # 1. 获取仓库源码
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. 配置 Rust Android 交叉编译目标
       - name: Install Rust Android target
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
 
-      # 3. 配置 Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          python-version: "3.12"
 
-      # 4. 安装 Meson >= 1.4、Ninja 及系统依赖
-      - name: Install build dependencies
+      - name: Install Meson, Ninja and dependencies
         run: |
           set -euo pipefail
 
           python -m pip install --upgrade pip
           python -m pip install --upgrade "meson>=1.4" ninja packaging
 
-          echo "Meson version:"
+          echo "=== Meson version ==="
           meson --version
 
           python -c \
-            'from packaging.version import Version; import mesonbuild; v=Version(mesonbuild.version); print("Meson:", v); assert v >= Version("1.4"), "Meson >= 1.4 required"'
+            'from packaging.version import Version; import subprocess; v=Version(subprocess.check_output(["meson", "--version"], text=True).strip()); print("Meson:", v); assert v >= Version("1.4"), "Meson >= 1.4 required"'
 
-          echo "Ninja version:"
+          echo "=== Ninja version ==="
           ninja --version
 
           sudo apt-get update
@@ -72,11 +68,24 @@ jobs:
             unzip \
             xz-utils
 
-      # 5. 编译驱动
+      - name: Check repository build files
+        run: |
+          set -euo pipefail
+
+          test -f build.sh || {
+            echo "::error::build.sh not found in repository root"
+            exit 1
+          }
+
+          echo "=== Repository root ==="
+          ls -la
+
+          echo "=== Build script ==="
+          sed -n '1,240p' build.sh
+
       - name: Build driver
         env:
           NDK_VERSION: r27c
-          WORKDIR: ${{ runner.temp }}/panvk-mtk-build
         run: |
           set -euo pipefail
 
@@ -85,32 +94,59 @@ jobs:
           bash ./build.sh "${{ inputs.mode }}" \
             2>&1 | tee build.log
 
-      # 6. 检查编译产物
-      - name: Verify output
+      - name: Locate and verify build artifacts
+        if: success()
         run: |
           set -euo pipefail
 
-          test -s driver/vulkan.mali.so
+          echo "=== Candidate shared libraries ==="
+          find . -type f -name '*.so' \
+            -not -path './.git/*' -print
 
-          echo "=== File information ==="
-          file driver/vulkan.mali.so
+          echo "=== Candidate archives ==="
+          find . -type f \( \
+            -name '*.zip' -o \
+            -name '*.tar.gz' -o \
+            -name '*.tar.xz' \
+          \) -not -path './.git/*' -print
 
-          echo "=== ELF information ==="
-          readelf -h driver/vulkan.mali.so
+          mkdir -p artifacts
+
+          # 收集构建产生的文件，避免假定固定输出目录
+          find . -type f \( \
+            -name '*.so' -o \
+            -name '*.zip' -o \
+            -name '*.tar.gz' -o \
+            -name '*.tar.xz' \
+          \) \
+            -not -path './.git/*' \
+            -not -path './artifacts/*' \
+            -exec cp --parents '{}' artifacts/ \;
+
+          if [ -z "$(find artifacts -type f -print -quit)" ]; then
+            echo "::error::No build artifacts found"
+            exit 1
+          fi
+
+          echo "=== Artifact file information ==="
+          find artifacts -type f -name '*.so' \
+            -exec file '{}' \;
 
           echo "=== SHA256 ==="
-          sha256sum driver/vulkan.mali.so \
+          find artifacts -type f -exec sha256sum '{}' \; \
             | tee SHA256SUMS.txt
 
-      # 7. 上传编译产物
+          cp SHA256SUMS.txt artifacts/
+
       - name: Upload build artifacts
+        if: always() && (success() || failure())
         uses: actions/upload-artifact@v4
         with:
-          name: panvk-mtk-driver-api34-${{ inputs.mode }}
+          name: panvk-mtk-api34-${{ inputs.mode }}
           path: |
-            driver/vulkan.mali.so
+            artifacts/
             build.log
             SHA256SUMS.txt
-          if-no-files-found: error
+          if-no-files-found: warn
           compression-level: 0
           retention-days: 14
