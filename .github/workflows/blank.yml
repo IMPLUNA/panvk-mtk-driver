@@ -105,11 +105,10 @@ jobs:
 
           cargo install bindgen-cli --locked
 
-          echo "=== Verify bindgen ==="
           command -v bindgen
           bindgen --version
 
-      - name: Verify LLVM, libclc and SPIR-V translator
+      - name: Verify LLVM and SPIR-V dependencies
         run: |
           set -euxo pipefail
 
@@ -118,98 +117,131 @@ jobs:
           clang-18 --version
 
           echo "=== libclc ==="
-          dpkg-query -W -f='${Package} ${Version}\n' \
-            libclc-18-dev
-          dpkg -L libclc-18-dev
+          dpkg-query -W -f='${Package} ${Version}\n' libclc-18-dev
 
-          echo "=== SPIR-V translator packages ==="
+          echo "=== SPIR-V translator ==="
           dpkg-query -W -f='${Package} ${Version}\n' \
             llvm-spirv-18 libllvmspirvlib-18-dev
-
-          echo "=== SPIR-V translator executable ==="
           command -v llvm-spirv-18
           llvm-spirv-18 --version || true
-
-          echo "=== SPIR-V library metadata ==="
-          dpkg -L libllvmspirvlib-18-dev
-
-          find /usr -type f \
-            \( -iname '*LLVMSPIRVLib*Config.cmake' \
-               -o -iname '*LLVMSPIRVLib*.cmake' \
-               -o -iname '*LLVMSPIRVLib*.pc' \) \
-            -print 2>/dev/null || true
 
           echo "=== SPIR-V tools ==="
           command -v spirv-as
           command -v spirv-val
 
-          echo "=== Rust ==="
+          echo "=== Rust and bindgen ==="
           rustc --version
           cargo --version
-
-          echo "=== bindgen ==="
-          command -v bindgen
           bindgen --version
 
-      - name: Validate source tree
+      - name: Validate repository
         run: |
-          set -euo pipefail
+          set -euxo pipefail
 
           test -f build.sh
+          test -f patches/panvk_mtk.patch
 
-          echo "=== Repository ==="
+          echo "=== Repository commit ==="
           git log -1 --oneline
 
           echo "=== Build script ==="
-          sed -n '1,260p' build.sh
+          sed -n '45,100p' build.sh
+
+          echo "=== Existing stub references ==="
+          grep -n 'panvk_drm_stub.c' \
+            patches/panvk_mtk.patch
+
+      - name: Repair incomplete Mesa patch
+        run: |
+          set -euxo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+
+          patch_path = Path("patches/panvk_mtk.patch")
+          patch = patch_path.read_text()
+
+          source = "src/panfrost/vulkan/panvk_drm_stub.c"
+          diff_header = f"diff --git a/{source} b/{source}"
+
+          if diff_header in patch:
+              print("Stub source already exists in the patch.")
+          else:
+              reference = "'panvk_drm_stub.c',"
+
+              if reference not in patch:
+                  raise SystemExit(
+                      "Expected panvk_drm_stub.c reference "
+                      "was not found; refusing to modify the patch."
+                  )
+
+              new_file_patch = r"""
+          diff --git a/src/panfrost/vulkan/panvk_drm_stub.c b/src/panfrost/vulkan/panvk_drm_stub.c
+          new file mode 100644
+          --- /dev/null
+          +++ b/src/panfrost/vulkan/panvk_drm_stub.c
+          @@ -0,0 +1,10 @@
+          +#include <errno.h>
+          +#include <stdint.h>
+          +#include <xf86drm.h>
+          +
+          +int drmCloseBufferHandle(int fd, uint32_t handle)
+          +{
+          +   (void)fd;
+          +   (void)handle;
+          +   return -ENOSYS;
+          +}
+          """
+
+              patch_path.write_text(
+                  patch.rstrip() + "\n\n" + new_file_patch.lstrip("\n")
+              )
+
+              print("Added missing DRM stub source to Mesa patch.")
+
+          updated = patch_path.read_text()
+
+          if diff_header not in updated:
+              raise SystemExit("DRM stub patch insertion failed.")
+
+          print("=== Verify patch definition ===")
+          print(updated[updated.index(diff_header):])
+          PY
 
       - name: Build driver
         env:
           BUILD_MODE: ${{ inputs.mode }}
         run: |
-          set -euo pipefail
+          set -euxo pipefail
 
           chmod +x ./build.sh
 
           bash ./build.sh "$BUILD_MODE" \
             2>&1 | tee build.log
 
-      - name: Locate and verify build artifacts
+      - name: Verify build output
         if: success()
         run: |
-          set -euo pipefail
+          set -euxo pipefail
 
-          echo "=== Shared libraries ==="
-          find . -type f -name '*.so' \
-            -not -path './.git/*' -print
+          SO="driver/vulkan.mali.so"
 
-          echo "=== Archives ==="
-          find . -type f \
-            \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.tar.xz' \) \
-            -not -path './.git/*' -print
-
-          mkdir -p artifacts
-
-          find . -type f \
-            \( -name '*.so' -o -name '*.zip' \
-               -o -name '*.tar.gz' -o -name '*.tar.xz' \) \
-            -not -path './.git/*' \
-            -not -path './artifacts/*' \
-            -exec cp --parents '{}' artifacts/ \;
-
-          if [ -z "$(find artifacts -type f -print -quit)" ]; then
-            echo "::error::No build artifacts found"
+          if [ ! -s "$SO" ]; then
+            echo "::error::Driver output is missing or empty: $SO"
             exit 1
           fi
 
-          echo "=== ELF information ==="
-          find artifacts -type f -name '*.so' \
-            -exec file '{}' \;
+          echo "=== File information ==="
+          file "$SO"
+
+          echo "=== ELF header ==="
+          readelf -h "$SO"
 
           echo "=== SHA256 ==="
-          find artifacts -type f \
-            -exec sha256sum '{}' \; | tee SHA256SUMS.txt
+          sha256sum "$SO" | tee SHA256SUMS.txt
 
+          mkdir -p artifacts
+          cp "$SO" artifacts/
           cp SHA256SUMS.txt artifacts/
 
       - name: Upload build artifacts and logs
