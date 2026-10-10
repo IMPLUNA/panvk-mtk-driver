@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Build mode
+        description: "Build mode"
         type: choice
         required: true
         default: release
@@ -21,40 +21,88 @@ concurrency:
 
 jobs:
   build:
-    name: Build Android Vulkan driver (API 34)
+    name: Build Android Vulkan Driver (API 34)
     runs-on: ubuntu-24.04
     timeout-minutes: 360
 
     steps:
+      # 1. 获取仓库源码
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2. 配置 Rust Android 交叉编译目标
       - name: Install Rust Android target
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
 
-      - name: Install patchelf and verification tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y patchelf file binutils
+      # 3. 配置 Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
 
+      # 4. 安装 Meson >= 1.4、Ninja 及系统依赖
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade "meson>=1.4" ninja packaging
+
+          echo "Meson version:"
+          meson --version
+
+          python -c \
+            'from packaging.version import Version; import mesonbuild; v=Version(mesonbuild.version); print("Meson:", v); assert v >= Version("1.4"), "Meson >= 1.4 required"'
+
+          echo "Ninja version:"
+          ninja --version
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            patchelf \
+            file \
+            binutils \
+            build-essential \
+            pkg-config \
+            cmake \
+            git \
+            curl \
+            unzip \
+            xz-utils
+
+      # 5. 编译驱动
       - name: Build driver
         env:
           NDK_VERSION: r27c
           WORKDIR: ${{ runner.temp }}/panvk-mtk-build
         run: |
           set -euo pipefail
-          bash ./build.sh "${{ inputs.mode }}" 2>&1 | tee build.log
 
+          chmod +x ./build.sh
+
+          bash ./build.sh "${{ inputs.mode }}" \
+            2>&1 | tee build.log
+
+      # 6. 检查编译产物
       - name: Verify output
         run: |
           set -euo pipefail
-          test -s driver/vulkan.mali.so
-          file driver/vulkan.mali.so
-          readelf -h driver/vulkan.mali.so | grep -E 'Class:|Machine:'
-          sha256sum driver/vulkan.mali.so | tee SHA256SUMS.txt
 
+          test -s driver/vulkan.mali.so
+
+          echo "=== File information ==="
+          file driver/vulkan.mali.so
+
+          echo "=== ELF information ==="
+          readelf -h driver/vulkan.mali.so
+
+          echo "=== SHA256 ==="
+          sha256sum driver/vulkan.mali.so \
+            | tee SHA256SUMS.txt
+
+      # 7. 上传编译产物
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
