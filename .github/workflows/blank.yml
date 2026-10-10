@@ -96,17 +96,25 @@ jobs:
             libxrandr-dev \
             libwayland-dev
 
-      - name: Install Meson and Ninja
+      - name: Install Python build dependencies
         run: |
-          set -euo pipefail
+          set -euxo pipefail
 
           python -m pip install --upgrade \
             "meson>=1.4" \
             ninja \
             packaging \
-            mako
+            mako \
+            PyYAML
 
-          echo "=== Meson ==="
+          echo "=== Python executable ==="
+          python --version
+          python -c 'import sys; print(sys.executable)'
+
+          echo "=== Verify PyYAML ==="
+          python -c 'import yaml; print("PyYAML:", yaml.__version__)'
+
+          echo "=== Verify Meson ==="
           meson --version
 
           python -c '
@@ -124,7 +132,7 @@ jobs:
               "Meson 1.4 or newer is required"
           '
 
-          echo "=== Ninja ==="
+          echo "=== Verify Ninja ==="
           ninja --version
 
       - name: Verify LLVM and libclc
@@ -137,22 +145,12 @@ jobs:
           echo "=== Clang ==="
           clang-18 --version
 
-          echo "=== Installed libclc package ==="
+          echo "=== libclc package ==="
           dpkg-query -W -f='${Package} ${Version}\n' \
             libclc-18-dev
 
           echo "=== libclc installed files ==="
           dpkg -L libclc-18-dev
-
-          echo "=== Find libclc metadata ==="
-          find /usr -type f \( \
-            -iname '*libclc*.pc' -o \
-            -iname '*libclc*config.cmake' -o \
-            -iname '*clc*config.cmake' \
-          \) -print 2>/dev/null || true
-
-          echo "=== pkg-config paths ==="
-          pkg-config --variable pc_path pkg-config
 
           echo "=== SPIR-V tools ==="
           command -v spirv-as
