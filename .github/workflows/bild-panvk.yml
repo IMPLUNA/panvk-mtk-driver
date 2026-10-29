@@ -59,7 +59,7 @@ jobs:
             bison flex gettext xsltproc libwayland-dev \
             rustc cargo patchelf binutils file
 
-      - name: Configure LLVM and CMake paths
+      - name: Configure LLVM paths
         shell: bash
         run: |
           set -euxo pipefail
@@ -71,11 +71,8 @@ jobs:
             echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib"
             echo "CLANG_PATH=/usr/lib/llvm-18/bin/clang"
             echo "LLVM_CONFIG=/usr/bin/llvm-config-18"
-            echo "CMAKE_PREFIX_PATH=/usr/lib/llvm-18;/usr;/usr/lib/$MULTIARCH"
             echo "PKG_CONFIG_PATH=/usr/lib/llvm-18/lib/pkgconfig:/usr/lib/$MULTIARCH/pkgconfig:/usr/lib/pkgconfig"
           } >> "$GITHUB_ENV"
-
-          echo "Multiarch directory: $MULTIARCH"
 
           llvm-config-18 --version
           llvm-config-18 --cmakedir
@@ -94,7 +91,7 @@ jobs:
           "$PYTHON" -m pip install --upgrade pip setuptools wheel
 
           "$PYTHON" -m pip install \
-            "meson==1.4.2" \
+            "meson==1.7.0" \
             packaging \
             "mako>=0.8.0" \
             pyyaml ply six pyparsing Jinja2
@@ -119,13 +116,15 @@ jobs:
 
           major, minor = map(int, match.groups())
 
-          if (major, minor) < (1, 4):
-              raise SystemExit(f"Meson >= 1.4.0 required, got {version}")
+          if (major, minor) < (1, 7):
+              raise SystemExit(
+                  f"Mesa Rust support requires Meson >= 1.7.0; got {version}"
+              )
 
-          print(f"Meson: {version}")
+          print(f"Meson version check passed: {version}")
           print(f"Mako: {mako.__version__}")
           print(f"Packaging: {packaging.__file__}")
-          print("Python dependency checks passed.")
+          print("Python dependencies verified.")
           PY
 
           echo "$RUNNER_TEMP/meson-venv/bin" >> "$GITHUB_PATH"
@@ -140,35 +139,24 @@ jobs:
         run: |
           set -euxo pipefail
 
-          echo "=== Installed translator packages ==="
+          echo "=== LLVM version ==="
+          llvm-config-18 --version
+
+          echo "=== Installed SPIR-V packages ==="
           dpkg-query -W \
             libllvmspirvlib-18-dev \
             llvm-spirv-18
 
-          echo "=== Translator development files ==="
+          echo "=== SPIR-V development files ==="
           dpkg -L libllvmspirvlib-18-dev
 
-          echo "=== Search CMake config files ==="
-          find /usr/lib /usr/share \
-            -iname '*LLVMSPIRVLib*' \
-            -o -iname '*llvmspirvlib*.pc' \
-            2>/dev/null || true
-
-          echo "=== pkg-config metadata ==="
+          echo "=== SPIR-V pkg-config metadata ==="
           pkg-config --list-all | grep -i spirv || true
 
-          echo "=== LLVM version ==="
-          llvm-config-18 --version
-
-          echo "=== CMake package discovery ==="
-          cmake --find-package \
-            -DNAME=LLVMSPIRVLib \
-            -DCOMPILER_ID=GNU \
-            -DLANGUAGE=CXX \
-            -DMODE=EXIST \
-            || true
-
-          echo "=== LLVM SPIR-V diagnostic completed ==="
+          echo "=== SPIR-V CMake configuration ==="
+          find /usr/lib /usr/share \
+            \( -iname '*LLVMSPIRVLib*' -o -iname '*llvmspirvlib*.pc' \) \
+            2>/dev/null || true
 
       - name: Verify build environment
         shell: bash
@@ -194,7 +182,7 @@ jobs:
 
           test -x /usr/lib/llvm-18/bin/clang
 
-          echo "Base build environment checks passed."
+          echo "Build environment checks passed."
 
       - name: Build PanVK driver
         shell: bash
@@ -246,6 +234,7 @@ jobs:
             echo "- Mode: ${{ inputs.mode }}"
             echo "- Mesa commit: $MESA_COMMIT"
             echo "- NDK: $NDK_VERSION"
+            echo '- Meson: 1.7.0'
             echo '- Output: driver/vulkan.mali.so'
             echo
             echo '### SHA-256'
