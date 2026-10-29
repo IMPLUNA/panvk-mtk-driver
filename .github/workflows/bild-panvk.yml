@@ -54,6 +54,15 @@ jobs:
           echo "PKG_CONFIG_PATH=/usr/lib/pkgconfig:/usr/lib/llvm-18/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
             >> "$GITHUB_ENV"
 
+      - name: Install Python packaging support
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          python3 -m pip install --user --break-system-packages packaging setuptools wheel
+
+          python3 -c "import packaging, setuptools, wheel; print('System Python packaging:', packaging.__file__)"
+
       - name: Install compatible Meson
         shell: bash
         run: |
@@ -62,7 +71,8 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/meson-venv"
 
           "$RUNNER_TEMP/meson-venv/bin/python" -m pip install --upgrade pip
-          "$RUNNER_TEMP/meson-venv/bin/python" -m pip install "meson==1.4.2"
+          "$RUNNER_TEMP/meson-venv/bin/python" -m pip install \
+            "meson==1.4.2" packaging setuptools wheel
 
           MESON="$RUNNER_TEMP/meson-venv/bin/meson"
           VERSION="$("$MESON" --version)"
@@ -72,6 +82,9 @@ jobs:
           "$RUNNER_TEMP/meson-venv/bin/python" - "$VERSION" <<'PY'
           import re
           import sys
+          import packaging
+          import setuptools
+          import wheel
 
           version = sys.argv[1].strip()
           match = re.match(r"^(\d+)\.(\d+)", version)
@@ -82,11 +95,12 @@ jobs:
           major, minor = map(int, match.groups())
 
           if (major, minor) < (1, 4):
-              raise SystemExit(
-                  f"Meson >= 1.4.0 required, got {version}"
-              )
+              raise SystemExit(f"Meson >= 1.4.0 required, got {version}")
 
           print(f"Meson version check passed: {version}")
+          print(f"packaging: {packaging.__file__}")
+          print(f"setuptools: {setuptools.__file__}")
+          print(f"wheel: {wheel.__file__}")
           PY
 
           echo "$RUNNER_TEMP/meson-venv/bin" >> "$GITHUB_PATH"
@@ -101,8 +115,6 @@ jobs:
         run: |
           set -euxo pipefail
 
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
           export PATH="/usr/lib/llvm-18/bin:$HOME/.cargo/bin:$PATH"
           export LIBCLANG_PATH="/usr/lib/llvm-18/lib"
           export CLANG_PATH="/usr/lib/llvm-18/bin/clang"
@@ -111,17 +123,16 @@ jobs:
           cargo --version
           rustup target list --installed
 
+          python3 --version
+          python3 -c "import packaging, setuptools, wheel"
+
           meson --version
           ninja --version
           clang --version
           patchelf --version
           git --version
 
-          echo "Checking libclc discovery..."
           pkg-config --modversion libclc
-          pkg-config --variable=libdir libclc
-
-          echo "Checking LLVM 18..."
           test -x /usr/lib/llvm-18/bin/clang
 
           echo "Build environment checks passed."
@@ -148,25 +159,20 @@ jobs:
           set -euxo pipefail
 
           SO="driver/vulkan.mali.so"
-
           test -s "$SO"
 
           file "$SO"
-
           readelf -h "$SO" > "$RUNNER_TEMP/panvk-elf-header.txt"
 
           grep -Eq 'Class:[[:space:]]+ELF64' \
             "$RUNNER_TEMP/panvk-elf-header.txt"
-
           grep -Eq 'Machine:[[:space:]]+AArch64' \
             "$RUNNER_TEMP/panvk-elf-header.txt"
 
           SONAME="$(patchelf --print-soname "$SO")"
           test "$SONAME" = "vulkan.mali.so"
 
-          echo "SHA-256:"
           sha256sum "$SO"
-
           echo "Driver verification passed."
 
       - name: Upload compiled driver
@@ -188,7 +194,7 @@ jobs:
             echo '- Mesa commit: 6598829019c'
             echo '- NDK: r27c'
             echo '- Meson: 1.4.2'
-            echo '- libclc: installed and checked'
+            echo '- Python packaging dependencies: checked'
             echo '- Output: driver/vulkan.mali.so'
             echo
             echo '### SHA-256'
