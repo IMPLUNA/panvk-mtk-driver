@@ -26,6 +26,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
 
+    env:
+      LLVM_VERSION: "18"
+      MESA_FORK_URL: https://github.com/funnymdzz/mesa.git
+      MESA_COMMIT: 6598829019c
+      NDK_VERSION: r27c
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -40,10 +46,12 @@ jobs:
           sudo apt-get install -y \
             python3 python3-venv python3-pip \
             python3-setuptools python3-wheel \
-            ninja-build pkg-config git wget unzip curl \
-            clang llvm-18-dev libclang-18-dev \
-            libclang-cpp18-dev libclang-rt-18-dev \
+            ninja-build pkg-config cmake git wget unzip curl \
+            clang llvm-18 llvm-18-dev \
+            libclang-18-dev libclang-cpp18-dev \
+            libclang-rt-18-dev \
             libclc-18 libclc-18-dev \
+            libllvmspirvlib-18-dev llvm-spirv-18 \
             spirv-tools glslang-tools \
             libx11-dev libxext-dev libxdamage-dev \
             libxfixes-dev libxrandr-dev libdrm-dev \
@@ -51,8 +59,27 @@ jobs:
             bison flex gettext xsltproc libwayland-dev \
             rustc cargo patchelf binutils file
 
-          echo "PKG_CONFIG_PATH=/usr/lib/pkgconfig:/usr/lib/llvm-18/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
-            >> "$GITHUB_ENV"
+      - name: Configure LLVM and CMake paths
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          MULTIARCH="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
+
+          {
+            echo "PATH=/usr/lib/llvm-18/bin:$HOME/.cargo/bin:$PATH"
+            echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib"
+            echo "CLANG_PATH=/usr/lib/llvm-18/bin/clang"
+            echo "LLVM_CONFIG=/usr/bin/llvm-config-18"
+            echo "CMAKE_PREFIX_PATH=/usr/lib/llvm-18;/usr;/usr/lib/$MULTIARCH"
+            echo "PKG_CONFIG_PATH=/usr/lib/llvm-18/lib/pkgconfig:/usr/lib/$MULTIARCH/pkgconfig:/usr/lib/pkgconfig"
+          } >> "$GITHUB_ENV"
+
+          echo "Multiarch directory: $MULTIARCH"
+
+          llvm-config-18 --version
+          llvm-config-18 --cmakedir
+          cmake --version
 
       - name: Install Python and Meson dependencies
         shell: bash
@@ -70,14 +97,10 @@ jobs:
             "meson==1.4.2" \
             packaging \
             "mako>=0.8.0" \
-            pyyaml \
-            ply \
-            six \
-            pyparsing \
-            Jinja2
+            pyyaml ply six pyparsing Jinja2
 
           VERSION="$("$MESON" --version)"
-          echo "Installed Meson version: $VERSION"
+          echo "Installed Meson: $VERSION"
 
           "$PYTHON" - "$VERSION" <<'PY'
           import re
@@ -97,14 +120,12 @@ jobs:
           major, minor = map(int, match.groups())
 
           if (major, minor) < (1, 4):
-              raise SystemExit(
-                  f"Meson >= 1.4.0 required, got {version}"
-              )
+              raise SystemExit(f"Meson >= 1.4.0 required, got {version}")
 
-          print(f"Meson version: {version}")
-          print(f"Mako version: {mako.__version__}")
+          print(f"Meson: {version}")
+          print(f"Mako: {mako.__version__}")
           print(f"Packaging: {packaging.__file__}")
-          print("Python build dependencies verified.")
+          print("Python dependency checks passed.")
           PY
 
           echo "$RUNNER_TEMP/meson-venv/bin" >> "$GITHUB_PATH"
@@ -114,54 +135,73 @@ jobs:
         with:
           targets: aarch64-linux-android
 
+      - name: Diagnose LLVM SPIR-V dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          echo "=== Installed translator packages ==="
+          dpkg-query -W \
+            libllvmspirvlib-18-dev \
+            llvm-spirv-18
+
+          echo "=== Translator development files ==="
+          dpkg -L libllvmspirvlib-18-dev
+
+          echo "=== Search CMake config files ==="
+          find /usr/lib /usr/share \
+            -iname '*LLVMSPIRVLib*' \
+            -o -iname '*llvmspirvlib*.pc' \
+            2>/dev/null || true
+
+          echo "=== pkg-config metadata ==="
+          pkg-config --list-all | grep -i spirv || true
+
+          echo "=== LLVM version ==="
+          llvm-config-18 --version
+
+          echo "=== CMake package discovery ==="
+          cmake --find-package \
+            -DNAME=LLVMSPIRVLib \
+            -DCOMPILER_ID=GNU \
+            -DLANGUAGE=CXX \
+            -DMODE=EXIST \
+            || true
+
+          echo "=== LLVM SPIR-V diagnostic completed ==="
+
       - name: Verify build environment
         shell: bash
         run: |
           set -euxo pipefail
 
-          export PATH="/usr/lib/llvm-18/bin:$HOME/.cargo/bin:$PATH"
-          export LIBCLANG_PATH="/usr/lib/llvm-18/lib"
-          export CLANG_PATH="/usr/lib/llvm-18/bin/clang"
-
-          echo "=== Python ==="
           python3 --version
           python3 -c "import packaging, mako, yaml, ply, jinja2"
 
-          echo "=== Meson ==="
           meson --version
+          ninja --version
+          cmake --version
 
-          echo "=== Rust ==="
           rustc --version
           cargo --version
           rustup target list --installed
 
-          echo "=== LLVM ==="
+          llvm-config-18 --version
           clang --version
-          test -x /usr/lib/llvm-18/bin/clang
-
-          echo "=== Build tools ==="
-          ninja --version
           patchelf --version
-          git --version
 
-          echo "=== libclc ==="
           pkg-config --modversion libclc
 
-          echo "Build environment checks passed."
+          test -x /usr/lib/llvm-18/bin/clang
+
+          echo "Base build environment checks passed."
 
       - name: Build PanVK driver
         shell: bash
         env:
           WORKDIR: ${{ runner.temp }}/panvk-mtk
-          NDK_VERSION: r27c
-          MESA_FORK_URL: https://github.com/funnymdzz/mesa.git
-          MESA_COMMIT: 6598829019c
         run: |
           set -euxo pipefail
-
-          export PATH="/usr/lib/llvm-18/bin:$HOME/.cargo/bin:$PATH"
-          export LIBCLANG_PATH="/usr/lib/llvm-18/lib"
-          export CLANG_PATH="/usr/lib/llvm-18/bin/clang"
 
           bash ./build.sh "${{ inputs.mode }}"
 
@@ -186,10 +226,7 @@ jobs:
           SONAME="$(patchelf --print-soname "$SO")"
           test "$SONAME" = "vulkan.mali.so"
 
-          echo "=== SHA-256 ==="
           sha256sum "$SO"
-
-          echo "Driver verification passed."
 
       - name: Upload compiled driver
         uses: actions/upload-artifact@v4
@@ -207,10 +244,8 @@ jobs:
             echo '## PanVK MTK build succeeded'
             echo
             echo "- Mode: ${{ inputs.mode }}"
-            echo '- Mesa commit: 6598829019c'
-            echo '- NDK: r27c'
-            echo '- Meson: 1.4.2'
-            echo '- Python Mako and packaging dependencies: checked'
+            echo "- Mesa commit: $MESA_COMMIT"
+            echo "- NDK: $NDK_VERSION"
             echo '- Output: driver/vulkan.mali.so'
             echo
             echo '### SHA-256'
