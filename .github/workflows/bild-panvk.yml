@@ -46,17 +46,41 @@ jobs:
             bison flex gettext xsltproc libwayland-dev \
             rustc cargo libclang-rt-18-dev patchelf binutils file
 
+      
       - name: Install compatible Meson
         shell: bash
         run: |
           set -euxo pipefail
+
           python3 -m venv "$RUNNER_TEMP/meson-venv"
           "$RUNNER_TEMP/meson-venv/bin/python" -m pip install --upgrade pip
           "$RUNNER_TEMP/meson-venv/bin/python" -m pip install "meson==1.4.2"
+
+          MESON="$RUNNER_TEMP/meson-venv/bin/meson"
+          VERSION="$("$MESON" --version)"
+          echo "Installed Meson version: $VERSION"
+
+          "$RUNNER_TEMP/meson-venv/bin/python" - "$VERSION" <<'PY'
+          import re
+          import sys
+
+          version = sys.argv[1].strip()
+          match = re.match(r"^(\d+)\.(\d+)", version)
+
+          if not match:
+              raise SystemExit(f"Cannot parse Meson version: {version}")
+
+          major, minor = map(int, match.groups())
+
+          if (major, minor) < (1, 4):
+              raise SystemExit(
+                  f"Meson >= 1.4.0 required, got {version}"
+              )
+
+          print(f"Meson version check passed: {version}")
+          PY
+
           echo "$RUNNER_TEMP/meson-venv/bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/meson-venv/bin/meson" --version
-          "$RUNNER_TEMP/meson-venv/bin/python" -c \
-            'import mesonbuild; assert tuple(map(int, mesonbuild.__version__.split(".")[:2])) >= (1, 4), mesonbuild.__version__'
 
       - name: Install Rust stable and Android target
         uses: dtolnay/rust-toolchain@stable
