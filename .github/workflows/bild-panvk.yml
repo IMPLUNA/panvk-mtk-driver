@@ -16,6 +16,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: panvk-build-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build PanVK (${{ inputs.mode }})
@@ -24,7 +28,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Install build dependencies
         shell: bash
@@ -32,8 +36,9 @@ jobs:
           set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y \
-            python3 python3-pip python3-setuptools python3-wheel \
-            ninja-build meson pkg-config git wget unzip curl \
+            python3 python3-venv python3-pip \
+            python3-setuptools python3-wheel \
+            ninja-build pkg-config git wget unzip curl \
             clang llvm-18-dev libclang-18-dev libclang-cpp18-dev \
             spirv-tools glslang-tools \
             libx11-dev libxext-dev libxdamage-dev libxfixes-dev \
@@ -41,23 +46,36 @@ jobs:
             bison flex gettext xsltproc libwayland-dev \
             rustc cargo libclang-rt-18-dev patchelf binutils file
 
+      - name: Install compatible Meson
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 -m venv "$RUNNER_TEMP/meson-venv"
+          "$RUNNER_TEMP/meson-venv/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/meson-venv/bin/python" -m pip install "meson==1.4.2"
+          echo "$RUNNER_TEMP/meson-venv/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/meson-venv/bin/meson" --version
+          "$RUNNER_TEMP/meson-venv/bin/python" -c \
+            'import mesonbuild; assert tuple(map(int, mesonbuild.__version__.split(".")[:2])) >= (1, 4), mesonbuild.__version__'
+
       - name: Install Rust stable and Android target
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
 
-      - name: Ensure Rust target and PATH
+      - name: Verify build tools
         shell: bash
         run: |
           set -euxo pipefail
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           rustup default stable
-          rustup target add aarch64-linux-android --toolchain stable
+          rustup target add aarch64-linux-android
           rustc --version
-          rustup target list --installed --toolchain stable | grep -Fx aarch64-linux-android
+          cargo --version
           meson --version
           patchelf --version
           /usr/lib/llvm-18/bin/clang --version
+          git --version
 
       - name: Build PanVK driver
         shell: bash
@@ -83,31 +101,27 @@ jobs:
           SONAME="$(patchelf --print-soname "$SO")"
           test "$SONAME" = "vulkan.mali.so"
           sha256sum "$SO"
-          md5sum "$SO"
 
       - name: Upload compiled driver
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: panvk-mtk-${{ inputs.mode }}-${{ github.sha }}
           path: driver/vulkan.mali.so
           if-no-files-found: error
           retention-days: 14
 
-      - name: Write build summary
+      - name: Build summary
         if: success()
         shell: bash
-        env:
-          BUILD_MODE: ${{ inputs.mode }}
-          MESA_COMMIT: 6598829019c
         run: |
           {
             echo '## PanVK MTK build succeeded'
             echo
-            echo "- Mode: ${BUILD_MODE}"
-            echo "- Mesa fork: https://github.com/funnymdzz/mesa.git"
-            echo "- Mesa commit: ${MESA_COMMIT}"
+            echo "- Mode: ${{ inputs.mode }}"
+            echo '- Mesa commit: 6598829019c'
             echo '- NDK: r27c'
-            echo '- Output: `driver/vulkan.mali.so`'
+            echo '- Meson: 1.4.2'
+            echo '- Output: driver/vulkan.mali.so'
             echo
             echo '### SHA-256'
             echo '```text'
