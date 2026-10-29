@@ -40,7 +40,9 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+
           sudo apt-get update
+
           sudo apt-get install -y \
             python3 python3-venv python3-pip \
             python3-setuptools python3-wheel \
@@ -53,14 +55,15 @@ jobs:
             spirv-tools glslang-tools \
             libx11-dev libxext-dev libxdamage-dev \
             libxfixes-dev libxrandr-dev libdrm-dev \
-            libexpat1-dev zlib1g-dev \
+            libelf-dev libexpat1-dev zlib1g-dev \
             bison flex gettext xsltproc libwayland-dev \
             rustc cargo patchelf binutils file
 
-      - name: Configure LLVM paths
+      - name: Configure LLVM and Cargo paths
         shell: bash
         run: |
           set -euxo pipefail
+
           MULTIARCH="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
 
           {
@@ -76,7 +79,6 @@ jobs:
           } >> "$GITHUB_ENV"
 
           llvm-config-18 --version
-          llvm-config-18 --cmakedir
           cmake --version
 
       - name: Install Python and Meson dependencies
@@ -85,10 +87,12 @@ jobs:
           set -euxo pipefail
 
           python3 -m venv "$RUNNER_TEMP/meson-venv"
+
           PYTHON="$RUNNER_TEMP/meson-venv/bin/python"
           MESON="$RUNNER_TEMP/meson-venv/bin/meson"
 
           "$PYTHON" -m pip install --upgrade pip setuptools wheel
+
           "$PYTHON" -m pip install \
             "meson==1.7.0" \
             packaging \
@@ -109,13 +113,15 @@ jobs:
 
           version = sys.argv[1].strip()
           match = re.match(r"^(\d+)\.(\d+)", version)
+
           if not match:
               raise SystemExit(f"Cannot parse Meson version: {version}")
 
           major, minor = map(int, match.groups())
+
           if (major, minor) < (1, 7):
               raise SystemExit(
-                  f"Mesa Rust support requires Meson >= 1.7.0; got {version}"
+                  f"Mesa requires Meson >= 1.7.0; got {version}"
               )
 
           print(f"Meson version check passed: {version}")
@@ -137,33 +143,75 @@ jobs:
           set -euxo pipefail
 
           mkdir -p "$CARGO_HOME/bin"
-          cargo install bindgen-cli --locked
 
-          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          cargo install bindgen-cli --locked
 
           command -v bindgen
           bindgen --version
+
+      - name: Repair missing panvk_drm_stub.c patch
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          PATCH="patches/panvk_mtk.patch"
+
+          test -f "$PATCH"
+
+          if ! grep -q \
+            '^diff --git a/src/panfrost/vulkan/panvk_drm_stub.c ' \
+            "$PATCH"; then
+
+            echo "Adding missing panvk_drm_stub.c source to patch."
+
+            cat >> "$PATCH" <<'PATCH_EOF'
+
+          diff --git a/src/panfrost/vulkan/panvk_drm_stub.c b/src/panfrost/vulkan/panvk_drm_stub.c
+          new file mode 100644
+          --- /dev/null
+          +++ b/src/panfrost/vulkan/panvk_drm_stub.c
+          @@ -0,0 +1,12 @@
+          +/*
+          + * Compatibility stub for Android environments without the expected
+          + * libdrm buffer-handle close implementation.
+          + */
+          +#include <stdint.h>
+          +#include <xf86drm.h>
+          +
+          +int
+          +drmCloseBufferHandle(int fd, uint32_t handle)
+          +{
+          +   (void)fd;
+          +   (void)handle;
+          +   return 0;
+          +}
+          PATCH_EOF
+          else
+            echo "Stub file patch already exists; skipping insertion."
+          fi
+
+          echo "=== Verify patch contains stub source ==="
+          grep -n -A16 \
+            '^diff --git a/src/panfrost/vulkan/panvk_drm_stub.c ' \
+            "$PATCH"
 
       - name: Diagnose LLVM SPIR-V dependencies
         shell: bash
         run: |
           set -euxo pipefail
 
-          echo "=== LLVM version ==="
           llvm-config-18 --version
 
-          echo "=== Installed SPIR-V packages ==="
           dpkg-query -W \
             libllvmspirvlib-18-dev \
             llvm-spirv-18
 
-          echo "=== SPIR-V development files ==="
           dpkg -L libllvmspirvlib-18-dev
 
-          echo "=== SPIR-V pkg-config metadata ==="
+          echo "=== SPIR-V pkg-config entries ==="
           pkg-config --list-all | grep -i spirv || true
 
-          echo "=== SPIR-V CMake configuration ==="
+          echo "=== SPIR-V CMake and pkg-config files ==="
           find /usr/lib /usr/share \
             \( -iname '*LLVMSPIRVLib*' -o -iname '*llvmspirvlib*.pc' \) \
             2>/dev/null || true
@@ -190,15 +238,18 @@ jobs:
           llvm-config-18 --version
           clang --version
           patchelf --version
+
           pkg-config --modversion libclc
 
           test -x /usr/lib/llvm-18/bin/clang
+
           echo "Build environment checks passed."
 
       - name: Build PanVK driver
         shell: bash
         run: |
           set -euxo pipefail
+
           bash ./build.sh "${{ inputs.mode }}"
 
       - name: Verify compiled driver
@@ -207,6 +258,7 @@ jobs:
           set -euxo pipefail
 
           SO="driver/vulkan.mali.so"
+
           test -s "$SO"
           file "$SO"
 
@@ -214,6 +266,7 @@ jobs:
 
           grep -Eq 'Class:[[:space:]]+ELF64' \
             "$RUNNER_TEMP/panvk-elf-header.txt"
+
           grep -Eq 'Machine:[[:space:]]+AArch64' \
             "$RUNNER_TEMP/panvk-elf-header.txt"
 
@@ -240,9 +293,9 @@ jobs:
             echo "- Mode: ${{ inputs.mode }}"
             echo "- Mesa commit: $MESA_COMMIT"
             echo "- NDK: $NDK_VERSION"
-            echo '- Meson: 1.7.0'
+            echo "- Meson: $(meson --version)"
             echo "- bindgen: $(bindgen --version)"
-            echo '- Output: driver/vulkan.mali.so'
+            echo "- Output: driver/vulkan.mali.so"
             echo
             echo '### SHA-256'
             echo '```text'
