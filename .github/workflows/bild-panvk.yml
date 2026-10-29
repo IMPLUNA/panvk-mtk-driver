@@ -1,0 +1,116 @@
+
+name: Build PanVK MTK Driver
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Build mode
+        type: choice
+        required: true
+        default: release
+        options:
+          - release
+          - debug
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build PanVK (${{ inputs.mode }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3 python3-pip python3-setuptools python3-wheel \
+            ninja-build meson pkg-config git wget unzip curl \
+            clang llvm-18-dev libclang-18-dev libclang-cpp18-dev \
+            spirv-tools glslang-tools \
+            libx11-dev libxext-dev libxdamage-dev libxfixes-dev \
+            libxrandr-dev libdrm-dev libexpat1-dev zlib1g-dev \
+            bison flex gettext xsltproc libwayland-dev \
+            rustc cargo libclang-rt-18-dev patchelf binutils file
+
+      - name: Install Rust stable and Android target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Ensure Rust target and PATH
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup default stable
+          rustup target add aarch64-linux-android --toolchain stable
+          rustc --version
+          rustup target list --installed --toolchain stable | grep -Fx aarch64-linux-android
+          meson --version
+          patchelf --version
+          /usr/lib/llvm-18/bin/clang --version
+
+      - name: Build PanVK driver
+        shell: bash
+        env:
+          WORKDIR: ${{ runner.temp }}/panvk-mtk
+          NDK_VERSION: r27c
+          MESA_FORK_URL: https://github.com/funnymdzz/mesa.git
+          MESA_COMMIT: 6598829019c
+        run: |
+          set -euxo pipefail
+          bash ./build.sh "${{ inputs.mode }}"
+
+      - name: Verify output
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SO="driver/vulkan.mali.so"
+          test -s "$SO"
+          file "$SO"
+          readelf -h "$SO" > "$RUNNER_TEMP/panvk-elf-header.txt"
+          grep -Eq 'Class:[[:space:]]+ELF64' "$RUNNER_TEMP/panvk-elf-header.txt"
+          grep -Eq 'Machine:[[:space:]]+AArch64' "$RUNNER_TEMP/panvk-elf-header.txt"
+          SONAME="$(patchelf --print-soname "$SO")"
+          test "$SONAME" = "vulkan.mali.so"
+          sha256sum "$SO"
+          md5sum "$SO"
+
+      - name: Upload compiled driver
+        uses: actions/upload-artifact@v7
+        with:
+          name: panvk-mtk-${{ inputs.mode }}-${{ github.sha }}
+          path: driver/vulkan.mali.so
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Write build summary
+        if: success()
+        shell: bash
+        env:
+          BUILD_MODE: ${{ inputs.mode }}
+          MESA_COMMIT: 6598829019c
+        run: |
+          {
+            echo '## PanVK MTK build succeeded'
+            echo
+            echo "- Mode: ${BUILD_MODE}"
+            echo "- Mesa fork: https://github.com/funnymdzz/mesa.git"
+            echo "- Mesa commit: ${MESA_COMMIT}"
+            echo '- NDK: r27c'
+            echo '- Output: `driver/vulkan.mali.so`'
+            echo
+            echo '### SHA-256'
+            echo '```text'
+            sha256sum driver/vulkan.mali.so
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
