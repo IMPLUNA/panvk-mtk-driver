@@ -30,7 +30,7 @@ jobs:
       MESA_FORK_URL: https://github.com/funnymdzz/mesa.git
       MESA_COMMIT: 6598829019c
       NDK_VERSION: r27c
-      CARGO_HOME: ${{ runner.temp }}/cargo
+      CARGO_HOME: /home/runner/.cargo
 
     steps:
       - name: Checkout repository
@@ -40,9 +40,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-
           sudo apt-get update
-
           sudo apt-get install -y \
             python3 python3-venv python3-pip \
             python3-setuptools python3-wheel \
@@ -63,7 +61,6 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-
           MULTIARCH="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
 
           {
@@ -88,12 +85,10 @@ jobs:
           set -euxo pipefail
 
           python3 -m venv "$RUNNER_TEMP/meson-venv"
-
           PYTHON="$RUNNER_TEMP/meson-venv/bin/python"
           MESON="$RUNNER_TEMP/meson-venv/bin/meson"
 
           "$PYTHON" -m pip install --upgrade pip setuptools wheel
-
           "$PYTHON" -m pip install \
             "meson==1.7.0" \
             packaging \
@@ -114,12 +109,10 @@ jobs:
 
           version = sys.argv[1].strip()
           match = re.match(r"^(\d+)\.(\d+)", version)
-
           if not match:
               raise SystemExit(f"Cannot parse Meson version: {version}")
 
           major, minor = map(int, match.groups())
-
           if (major, minor) < (1, 7):
               raise SystemExit(
                   f"Mesa Rust support requires Meson >= 1.7.0; got {version}"
@@ -144,7 +137,6 @@ jobs:
           set -euxo pipefail
 
           mkdir -p "$CARGO_HOME/bin"
-
           cargo install bindgen-cli --locked
 
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
@@ -198,18 +190,15 @@ jobs:
           llvm-config-18 --version
           clang --version
           patchelf --version
-
           pkg-config --modversion libclc
 
           test -x /usr/lib/llvm-18/bin/clang
-
           echo "Build environment checks passed."
 
       - name: Build PanVK driver
         shell: bash
         run: |
           set -euxo pipefail
-
           bash ./build.sh "${{ inputs.mode }}"
 
       - name: Verify compiled driver
@@ -218,7 +207,6 @@ jobs:
           set -euxo pipefail
 
           SO="driver/vulkan.mali.so"
-
           test -s "$SO"
           file "$SO"
 
@@ -226,7 +214,6 @@ jobs:
 
           grep -Eq 'Class:[[:space:]]+ELF64' \
             "$RUNNER_TEMP/panvk-elf-header.txt"
-
           grep -Eq 'Machine:[[:space:]]+AArch64' \
             "$RUNNER_TEMP/panvk-elf-header.txt"
 
@@ -254,8 +241,7 @@ jobs:
             echo "- Mesa commit: $MESA_COMMIT"
             echo "- NDK: $NDK_VERSION"
             echo '- Meson: 1.7.0'
-            echo '- bindgen:'
-            bindgen --version
+            echo "- bindgen: $(bindgen --version)"
             echo '- Output: driver/vulkan.mali.so'
             echo
             echo '### SHA-256'
