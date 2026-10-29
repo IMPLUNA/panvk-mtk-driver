@@ -34,30 +34,39 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+
           sudo apt-get update
+
           sudo apt-get install -y \
             python3 python3-venv python3-pip \
             python3-setuptools python3-wheel \
             ninja-build pkg-config git wget unzip curl \
-            clang llvm-18-dev libclang-18-dev libclang-cpp18-dev \
+            clang llvm-18-dev libclang-18-dev \
+            libclang-cpp18-dev libclang-rt-18-dev \
+            libclc-18 libclc-18-dev \
             spirv-tools glslang-tools \
-            libx11-dev libxext-dev libxdamage-dev libxfixes-dev \
-            libxrandr-dev libdrm-dev libexpat1-dev zlib1g-dev \
+            libx11-dev libxext-dev libxdamage-dev \
+            libxfixes-dev libxrandr-dev libdrm-dev \
+            libexpat1-dev zlib1g-dev \
             bison flex gettext xsltproc libwayland-dev \
-            rustc cargo libclang-rt-18-dev patchelf binutils file
+            rustc cargo patchelf binutils file
 
-      
+          echo "PKG_CONFIG_PATH=/usr/lib/pkgconfig:/usr/lib/llvm-18/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
+            >> "$GITHUB_ENV"
+
       - name: Install compatible Meson
         shell: bash
         run: |
           set -euxo pipefail
 
           python3 -m venv "$RUNNER_TEMP/meson-venv"
+
           "$RUNNER_TEMP/meson-venv/bin/python" -m pip install --upgrade pip
           "$RUNNER_TEMP/meson-venv/bin/python" -m pip install "meson==1.4.2"
 
           MESON="$RUNNER_TEMP/meson-venv/bin/meson"
           VERSION="$("$MESON" --version)"
+
           echo "Installed Meson version: $VERSION"
 
           "$RUNNER_TEMP/meson-venv/bin/python" - "$VERSION" <<'PY'
@@ -87,19 +96,35 @@ jobs:
         with:
           targets: aarch64-linux-android
 
-      - name: Verify build tools
+      - name: Verify build environment
         shell: bash
         run: |
           set -euxo pipefail
+
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          rustup default stable
-          rustup target add aarch64-linux-android
+
+          export PATH="/usr/lib/llvm-18/bin:$HOME/.cargo/bin:$PATH"
+          export LIBCLANG_PATH="/usr/lib/llvm-18/lib"
+          export CLANG_PATH="/usr/lib/llvm-18/bin/clang"
+
           rustc --version
           cargo --version
+          rustup target list --installed
+
           meson --version
+          ninja --version
+          clang --version
           patchelf --version
-          /usr/lib/llvm-18/bin/clang --version
           git --version
+
+          echo "Checking libclc discovery..."
+          pkg-config --modversion libclc
+          pkg-config --variable=libdir libclc
+
+          echo "Checking LLVM 18..."
+          test -x /usr/lib/llvm-18/bin/clang
+
+          echo "Build environment checks passed."
 
       - name: Build PanVK driver
         shell: bash
@@ -110,21 +135,39 @@ jobs:
           MESA_COMMIT: 6598829019c
         run: |
           set -euxo pipefail
+
+          export PATH="/usr/lib/llvm-18/bin:$HOME/.cargo/bin:$PATH"
+          export LIBCLANG_PATH="/usr/lib/llvm-18/lib"
+          export CLANG_PATH="/usr/lib/llvm-18/bin/clang"
+
           bash ./build.sh "${{ inputs.mode }}"
 
-      - name: Verify output
+      - name: Verify compiled driver
         shell: bash
         run: |
           set -euxo pipefail
+
           SO="driver/vulkan.mali.so"
+
           test -s "$SO"
+
           file "$SO"
+
           readelf -h "$SO" > "$RUNNER_TEMP/panvk-elf-header.txt"
-          grep -Eq 'Class:[[:space:]]+ELF64' "$RUNNER_TEMP/panvk-elf-header.txt"
-          grep -Eq 'Machine:[[:space:]]+AArch64' "$RUNNER_TEMP/panvk-elf-header.txt"
+
+          grep -Eq 'Class:[[:space:]]+ELF64' \
+            "$RUNNER_TEMP/panvk-elf-header.txt"
+
+          grep -Eq 'Machine:[[:space:]]+AArch64' \
+            "$RUNNER_TEMP/panvk-elf-header.txt"
+
           SONAME="$(patchelf --print-soname "$SO")"
           test "$SONAME" = "vulkan.mali.so"
+
+          echo "SHA-256:"
           sha256sum "$SO"
+
+          echo "Driver verification passed."
 
       - name: Upload compiled driver
         uses: actions/upload-artifact@v4
@@ -145,6 +188,7 @@ jobs:
             echo '- Mesa commit: 6598829019c'
             echo '- NDK: r27c'
             echo '- Meson: 1.4.2'
+            echo '- libclc: installed and checked'
             echo '- Output: driver/vulkan.mali.so'
             echo
             echo '### SHA-256'
